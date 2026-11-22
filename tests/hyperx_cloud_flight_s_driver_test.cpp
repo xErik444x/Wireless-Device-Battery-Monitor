@@ -16,6 +16,14 @@ std::map<BYTE, Reports> script;
 Reports pending;
 std::vector<std::vector<BYTE>> writes;
 int opens = 0;
+// Cloud II Wireless (Kingston 0951:1718) behaviour observed on hardware: only the FF13:0001 collection
+// answers, a write only goes through after a report-6 input report read on the same handle, and each
+// handle accepts a single write.
+bool cloud2Kingston = false;
+bool vendorCollection = false;
+bool primed = false;
+int writesOnHandle = 0;
+int primes = 0;
 
 HidColl Collection(USHORT pid, USHORT page = 0xFF13, USHORT usage = 0x0001,
                    USHORT inLen = 62, USHORT outLen = 62, USHORT vid = 0x0951) {
@@ -45,6 +53,9 @@ PollContext Poll(const std::vector<HidColl>& colls, std::map<BYTE, Reports> repl
     pending.clear();
     writes.clear();
     opens = 0;
+    primed = false;
+    writesOnHandle = 0;
+    primes = 0;
     PollContext ctx;
     ctx.colls = colls;
     PollHyperX(ctx);
@@ -72,10 +83,26 @@ void CheckRequests() {
 }  // namespace
 
 // Scripted HID layer. No Win32 handle is opened and no device settings are changed.
-bool HidDev::Open(const HidColl&) { ++opens; return true; }
+bool HidDev::Open(const HidColl& c) {
+    ++opens;
+    cloud2Kingston = c.vid == 0x0951 && c.pid == 0x1718;
+    vendorCollection = c.page() == 0xFF13 && c.usage() == 0x0001;
+    primed = false;
+    writesOnHandle = 0;
+    return true;
+}
 void HidDev::Close() {}
+bool HidDev::GetInputReport(BYTE reportId, std::vector<BYTE>& out) {
+    if (reportId != 0x06 || (cloud2Kingston && !vendorCollection)) return false;
+    ++primes;
+    primed = true;
+    out.assign(62, 0);
+    return true;
+}
 bool HidDev::Write(const std::vector<BYTE>& r, int) {
     assert(r.size() == 17 && r[14] == 0xBB);
+    if (cloud2Kingston && (!vendorCollection || !primed || writesOnHandle > 0)) return false;
+    ++writesOnHandle;
     writes.push_back(r);
     auto it = script.find(r[15]);
     if (it != script.end()) pending.insert(pending.end(), it->second.begin(), it->second.end());
@@ -165,10 +192,30 @@ int main() {
     PollHyperX(claimed);
     assert(claimed.out.empty() && opens == 0 && writes.empty());
 
-    // Regression: Kingston Cloud II Wireless must continue using this same protocol.
-    ctx = Poll(Collection(0x1718, 0x000C), Device(76));
-    assert(ctx.out.size() == 1 && ctx.out[0].name == L"HyperX Cloud II Wireless");
-    assert(ctx.out[0].percent == 76 && ctx.IsClaimed(0x0951, 0x1718));
+    // Regression: Kingston Cloud II Wireless (0951:1718) uses the same frame, but only the FF13:0001
+    // collection answers, the dongle needs a report-6 input report read on the same handle before the
+    // write, and it accepts a single write per handle, so the level is the only thing read.
+    ctx = Poll(Collection(0x1718), Device(76, 1));
+    assert(opens == 1 && primes == 1 && writes.size() == 1);
+    assert(ctx.out.size() == 1 && ctx.out[0].key == L"hyperx:1718");
+    assert(ctx.out[0].name == L"HyperX Cloud II Wireless");
+    assert(ctx.out[0].kind == DeviceKind::Headset && ctx.out[0].via == L"2.4 GHz receiver");
+    assert(ctx.out[0].percent == 76 && !ctx.out[0].charging);
+    assert(ctx.IsClaimed(0x0951, 0x1718));
 
-    std::puts("HyperX Cloud Flight S tests passed (16EA/16EB, 62-byte queries, charging, filters, failures).");
+    // Windows also lists a Consumer Control collection with 62/62 reports for this dongle: it does not
+    // answer, so it must not be claimed and the headset must not be counted twice.
+    ctx = Poll({ Collection(0x1718, 0x000C), Collection(0x1718) }, Device(64));
+    assert(opens == 2 && ctx.out.size() == 1 && ctx.out[0].percent == 64);
+
+    // No answer, out-of-range level or a malformed reply: don't claim a headset.
+    ctx = Poll(Collection(0x1718), {});
+    assert(ctx.out.empty() && ctx.claimed.empty());
+    ctx = Poll(Collection(0x1718), { { 0x02, { Reply(0x02, 101) } } });
+    assert(ctx.out.empty() && ctx.claimed.empty());
+    ctx = Poll(Collection(0x1718), { { 0x02, { Reply(0x02, 80, false) } } });
+    assert(ctx.out.empty() && ctx.claimed.empty());
+
+    std::puts("HyperX Cloud Flight S tests passed (16EA/16EB, 62-byte queries, charging, filters, failures, "
+              "Cloud II Kingston priming and single write).");
 }

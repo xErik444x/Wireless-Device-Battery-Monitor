@@ -75,6 +75,7 @@ int HidDev::Read(std::vector<BYTE>& out, int timeoutMs) {
 // The Stinger Core path of the same file; never reached by these tests.
 bool HidDev::SetFeature(const std::vector<BYTE>&) { return false; }
 bool HidDev::GetFeature(BYTE, std::vector<BYTE>&) { return false; }
+bool HidDev::GetInputReport(BYTE, std::vector<BYTE>&) { return false; }
 std::wstring Hex4(USHORT v) {
     wchar_t text[8];
     swprintf(text, 8, L"%04X", v);

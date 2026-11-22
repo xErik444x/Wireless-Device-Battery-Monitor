@@ -65,6 +65,7 @@ bool HidDev::GetFeature(BYTE id, std::vector<BYTE>& out) {
     pending.erase(pending.begin());
     return true;
 }
+bool HidDev::GetInputReport(BYTE, std::vector<BYTE>&) { return false; }
 std::wstring Hex4(USHORT v) {
     wchar_t text[8];
     swprintf(text, 8, L"%04X", v);

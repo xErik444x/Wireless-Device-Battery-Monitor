@@ -4,6 +4,8 @@
 // Cloud III Wireless verified on hardware (03F0:0C9D) and github.com/Medprj/HyperXWM;
 // Cloud III S from github.com/LennardKittner/HyperHeadset; Cloud Stinger Core from
 // github.com/davidsantanaalves/HyperBatteryMonitor (also Cloud Core Wireless DTS 0951:173F, verified on hardware);
+// Cloud II Wireless (Kingston) framing and the report-6 pre-read from
+// github.com/auto94/HyperX-Cloud-2-Battery-Monitor;
 // Pulsefire Dart (0951:16E1, read on hardware) follows the reverse-engineering notes in
 // github.com/santeri3700/hyperx_pulsefire_dart_reverse_engineering (CC0), also implemented in
 // github.com/radoslavchobanov/PlasmaNGenuity (MIT), see PulsefireDart;
@@ -72,10 +74,20 @@ bool Cloud2(const HidColl& c, DeviceStatus& s) {
 
 // Cloud II Wireless (Kingston 0951:1718) and Cloud Flight S (0951:16EA/16EB):
 // fixed 62-byte frame, reply 0B 00 BB <cmd>.
+// The Cloud II Kingston dongle only answers on its FF13:0001 collection, drops the write unless a
+// report-6 input report has been read from the control pipe on the same handle first, and accepts a
+// single write per handle (all three observed on hardware 2026-11-21, 0951:1718, before and after the
+// fix). That is the same pre-read as github.com/auto94/HyperX-Cloud-2-Battery-Monitor (MainForm.cpp),
+// so only the level is queried there: charging and voltage are not decoded for this dongle.
 bool Cloud2Kingston(const HidColl& c, DeviceStatus& s) {
+    const bool cloud2 = c.pid == 0x1718;
     HidDev d;
     if (!d.Open(c)) return false;
     auto q = [&](BYTE cmd, std::vector<BYTE>& r) {
+        if (cloud2) {  // prime the dongle: without it the write is dropped
+            std::vector<BYTE> echo;
+            d.GetInputReport(0x06, echo);
+        }
         std::vector<BYTE> req = { 0x06, 0x00, 0x02, 0x00, 0x9A, 0x00, 0x00, 0x68, 0x4A, 0x8E, 0x0A, 0x00, 0x00, 0x00, 0xBB, cmd, 0x00 };
         return Query(d, req, r, 1000, [cmd](const std::vector<BYTE>& r) { return r.size() >= 8 && r[0] == 0x0B && r[2] == 0xBB && r[3] == cmd; });
     };
@@ -83,7 +95,7 @@ bool Cloud2Kingston(const HidColl& c, DeviceStatus& s) {
     if (!q(0x02, r) || r[7] > 100) return false;
     s = Base(c.pid, (c.pid == 0x16EA || c.pid == 0x16EB) ? L"HyperX Cloud Flight S" : L"HyperX Cloud II Wireless");
     s.percent = r[7];
-    if (q(0x03, r)) s.charging = r[4] == 1;
+    if (!cloud2 && q(0x03, r)) s.charging = r[4] == 1;
     return true;
 }
 
